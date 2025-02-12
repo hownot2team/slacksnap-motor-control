@@ -9,10 +9,46 @@ logging.info('BOOT UP')
 
 import asyncio
 import aiomqtt
+import serial
+import glob
 
 import dyn4
 
-dmm = None
+ENCODER_PPR = 65536
+
+ONE_MOTOR = os.environ.get('ONE_MOTOR', False)
+
+dmm1 = None
+dmm2 = None
+
+
+async def send_mqtt(topic, message):
+    try:
+        async with aiomqtt.Client('localhost') as client:
+            await client.publish(topic, payload=message.encode())
+    except BaseException as e:
+        logging.error('Problem sending MQTT topic %s, message %s: %s - %s', topic, message, e.__class__.__name__, e)
+        await asyncio.sleep(1)
+        return False
+
+
+def set_motors(rpm):
+    # we want these to happen no matter what so motors stay in sync
+
+    logging.debug('Setting motor RPMs to %s', rpm)
+
+    if dmm1:
+        try:
+            dmm1.set_speed(rpm)
+        except BaseException as e:
+            logging.error('Problem setting Motor1 rpm %s: %s - %s', rpm, e.__class__.__name__, e)
+
+    if dmm2:
+        try:
+            dmm2.set_speed(rpm)
+        except BaseException as e:
+            logging.error('Problem setting Motor2 rpm %s: %s - %s', rpm, e.__class__.__name__, e)
+
 
 async def process_mqtt(message):
     try:
@@ -25,7 +61,7 @@ async def process_mqtt(message):
 
     if topic == 'motion/set_rpm':
         rpm = int(float(text))
-        dmm.set_speed(rpm)
+        set_motors(rpm)
 
 
 async def monitor_mqtt():
@@ -41,33 +77,95 @@ async def monitor_mqtt():
                 async for message in client.messages:
                     await process_mqtt(message)
         except aiomqtt.MqttError:
-            logging.info('MQTT connection lost, reconnecting in 5 seconds...')
-            await asyncio.sleep(5)
+            logging.info('MQTT connection lost, reconnecting in 1 second...')
+            await asyncio.sleep(1)
+
+
+async def init_motor(path, name):
+    try:
+        dmm = dyn4.DMMDrive(path, 0)
+    except BaseException as e:
+        logging.error('Problem opening %s port %s: %s - %s', name, path, e.__class__.__name__, e)
+        await send_mqtt('server/motor_status', name + ' disconnected')
+        await asyncio.sleep(1)
+        return False
+
+    logging.info('Port %s connected.', path)
+    await send_mqtt('server/motor_status', name + ' connected')
+
+    dmm.set_speed(0)
+
+    return dmm
+
+
+async def read_motor(dmm, name):
+    try:
+        return dmm.read_AbsPos32()
+    except BaseException as e:
+        # any problems, kill both motors
+        # TODO: add tripping e-stop
+        set_motors(0)
+
+        logging.error('Problem reading %s: %s - %s', name, e.__class__.__name__, e)
+        await send_mqtt('server/motor_status', name + ' disconnected')
+        dmm = False
+        return False
+
+
+async def check_sync(rev1, rev2):
+    global dmm1, dmm2
+
+    difference = rev1 - rev2
+
+    if abs(difference) > 1.0:
+        # out of sync, kill both motors
+        # TODO: add tripping e-stop
+        set_motors(0)
+
+        dmm1 = False
+        dmm2 = False
+
+        logging.error('MOTOR READINGS OUT OF SYNC! Motor1: %s, Motor2: %s, difference: %s', rev1, rev2, difference)
+        await send_mqtt('server/motor_status', 'Motor desync')
 
 
 async def monitor_dyn4():
+    global dmm1, dmm2
+
     while True:
         await asyncio.sleep(0.1)
 
-        if not dmm:
+        if not dmm1:
+            dmm1 = await init_motor('/dev/ttyUSB0', 'Motor1')
             continue
 
-        pos = dmm.read_AbsPos32()
-        encoder_ppr = 65536
+        if not dmm2 and not ONE_MOTOR:
+            dmm2 = await init_motor('/dev/ttyUSB1', 'Motor2')
+            continue
 
-        revolutions = pos / 65536
+        pos1 = await read_motor(dmm1, 'Motor1')
+        if pos1 is False:
+            dmm1 = False
+            continue
+        rev1 = pos1 / ENCODER_PPR
 
-        async with aiomqtt.Client('localhost') as client:
-            message = str(revolutions)
-            topic = 'server/position'
-            await client.publish(topic, payload=message.encode())
+        if ONE_MOTOR:
+            revolutions = rev1
+        else:
+            pos2 = await read_motor(dmm2, 'Motor2')
+            if pos2 is False:
+                dmm2 = False
+                continue
+            rev2 = pos2 / ENCODER_PPR
 
+            revolutions = (rev1 + rev2) / 2.0
 
-async def init():
-    global dmm
+            await check_sync(rev1, rev2)
 
-    dmm = dyn4.DMMDrive('/dev/ttyUSB0', 0)
-    dmm.set_speed(0)
+        topic = 'server/position'
+        message = str(round(revolutions, 5))
+        await send_mqtt(topic, message)
+
 
 
 def task_died(future):
@@ -84,7 +182,6 @@ def main():
 
     a = loop.create_task(monitor_dyn4()).add_done_callback(task_died)
     b = loop.create_task(monitor_mqtt()).add_done_callback(task_died)
-    z = loop.create_task(init())
 
     loop.run_forever()
 
