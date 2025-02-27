@@ -13,6 +13,7 @@ import serial
 import glob
 
 import dyn4
+import relays
 
 ENCODER_PPR = 65536
 
@@ -20,6 +21,20 @@ ONE_MOTOR = os.environ.get('ONE_MOTOR', False)
 
 dmm1 = None
 dmm2 = None
+
+
+MOTOR_EN1 = 0
+MOTOR_EN2 = 1
+
+def enable_motors():
+    logging.info('Enabling both motors...')
+    relays.relay_on(MOTOR_EN1)
+    relays.relay_on(MOTOR_EN2)
+
+def disable_motors():
+    logging.info('Disabling both motors...')
+    relays.relay_off(MOTOR_EN1)
+    relays.relay_off(MOTOR_EN2)
 
 
 async def send_mqtt(topic, message):
@@ -84,6 +99,7 @@ async def monitor_mqtt():
 async def init_motor(path, name):
     try:
         dmm = dyn4.DMMDrive(path, 0)
+        _ =  dmm.read_AbsPos32()
     except BaseException as e:
         logging.error('Problem opening %s port %s: %s - %s', name, path, e.__class__.__name__, e)
         await send_mqtt('server/motor_status', name + ' disconnected')
@@ -103,8 +119,8 @@ async def read_motor(dmm, name):
         return dmm.read_AbsPos32()
     except BaseException as e:
         # any problems, kill both motors
-        # TODO: add tripping e-stop
         set_motors(0)
+        disable_motors()
 
         logging.error('Problem reading %s: %s - %s', name, e.__class__.__name__, e)
         await send_mqtt('server/motor_status', name + ' disconnected')
@@ -119,8 +135,8 @@ async def check_sync(rev1, rev2):
 
     if abs(difference) > 1.0:
         # out of sync, kill both motors
-        # TODO: add tripping e-stop
         set_motors(0)
+        disable_motors()
 
         dmm1 = False
         dmm2 = False
@@ -178,6 +194,8 @@ def task_died(future):
 
 
 def main():
+    enable_motors()
+
     loop = asyncio.get_event_loop()
 
     a = loop.create_task(monitor_dyn4()).add_done_callback(task_died)
