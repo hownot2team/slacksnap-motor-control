@@ -11,6 +11,7 @@ import asyncio
 import aiomqtt
 import serial
 import glob
+import time
 
 import dyn4
 import relays
@@ -23,8 +24,8 @@ dmm1 = None
 dmm2 = None
 
 
-MOTOR_EN1 = 0
-MOTOR_EN2 = 1
+MOTOR_EN1 = 1
+MOTOR_EN2 = 2
 
 def enable_motors():
     logging.info('Enabling both motors...')
@@ -195,6 +196,7 @@ def task_died(future):
 
 def main():
     enable_motors()
+    time.sleep(2)
 
     loop = asyncio.get_event_loop()
 

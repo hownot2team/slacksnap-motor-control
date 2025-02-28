@@ -7,10 +7,10 @@ DEVICE_ADDR = 0x10
 bus = smbus.SMBus(DEVICE_BUS)
 
 def relay_on(num):
-    bus.write_byte_data(DEVICE_ADDR, num, 0x00)
+    bus.write_byte_data(DEVICE_ADDR, num, 0xFF)
 
 def relay_off(num):
-    bus.write_byte_data(DEVICE_ADDR, num, 0xFF)
+    bus.write_byte_data(DEVICE_ADDR, num, 0x00)
 
 def test():
     while True:
@@ -25,4 +25,6 @@ def test():
 
 
 if __name__ == '__main__':
-    test()
+    #test()
+    relay_off(1)
+    relay_off(2)

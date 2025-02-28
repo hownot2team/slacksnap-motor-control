@@ -661,7 +661,7 @@ def serial_loop(dev_fn):
         d['TrqCurrent'] = dmm.read_TrqCurrent()
 
         if True:
-            dmm.set_speed(-30)
+            dmm.set_speed(0)
 
             time.sleep(.5)
             d['Speed'] = dmm.measure_speed()
